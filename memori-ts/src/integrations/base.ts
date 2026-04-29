@@ -1,5 +1,11 @@
 import { LLMRequest, LLMResponse, CallContext } from '@memorilabs/axon';
 import { MemoriCore, IntegrationRequest } from '../types/integrations.js';
+import {
+  AgentRecallParams,
+  AgentRecallResponse,
+  AgentRecallSummaryParams,
+  AgentRecallSummaryResponse,
+} from '../types/api.js';
 
 /**
  * Abstract base class for Memori framework integrations.
@@ -17,12 +23,19 @@ export abstract class BaseIntegration {
    */
   private buildSyntheticPayload(req: IntegrationRequest) {
     const syntheticReq: LLMRequest = {
-      messages: [{ role: 'user', content: req.userMessage }],
+      messages: [
+        {
+          role: req.userMessage.role,
+          content: req.userMessage.content,
+          type: req.userMessage.type,
+        },
+      ],
       model: req.metadata?.model || '',
     };
 
     const syntheticRes: LLMResponse = {
-      content: req.agentResponse,
+      content: req.agentResponse.content,
+      type: req.agentResponse.type,
     };
 
     const syntheticCtx: CallContext = {
@@ -81,6 +94,40 @@ export abstract class BaseIntegration {
   }
 
   /**
+   * Internal helper: Fetches memories from the agent recall endpoint.
+   *
+   * @param params - Optional filter parameters (projectId, sessionId, query, limit)
+   * @returns Raw recall response, or empty object on failure
+   * @internal
+   */
+  protected async executeAgentRecall(params?: AgentRecallParams): Promise<AgentRecallResponse> {
+    try {
+      return await this.core.recall.agentRecall(params);
+    } catch (e) {
+      console.warn('Memori Agent Recall failed:', e);
+      return {};
+    }
+  }
+
+  /**
+   * Internal helper: Fetches memory summaries from the agent recall summary endpoint.
+   *
+   * @param params - Optional filter parameters (projectId, sessionId, limit)
+   * @returns Raw recall summary response, or empty object on failure
+   * @internal
+   */
+  protected async executeAgentRecallSummary(
+    params?: AgentRecallSummaryParams
+  ): Promise<AgentRecallSummaryResponse> {
+    try {
+      return await this.core.recall.agentRecallSummary(params);
+    } catch (e) {
+      console.warn('Memori Agent Recall Summary failed:', e);
+      return {};
+    }
+  }
+
+  /**
    * Internal helper: Recalls memories by translating the query into Axon format,
    * passing it through the Recall engine, and extracting the injected system prompt.
    *
@@ -108,6 +155,21 @@ export abstract class BaseIntegration {
     } catch (e) {
       console.warn('Memori Integration Recall failed:', e);
       return undefined;
+    }
+  }
+
+  /**
+   * Internal helper: Sends feedback directly to the Memori team.
+   *
+   * @param content - The feedback text
+   * @internal
+   */
+  protected async executeAgentFeedback(content: string): Promise<void> {
+    try {
+      await this.core.defaultApi.post('agent/feedback', { content });
+      return;
+    } catch (e) {
+      console.warn('Memori Agent Feedback failed:', e);
     }
   }
 }

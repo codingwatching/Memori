@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import memoriPlugin from '../src/index.js';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 
-vi.mock('../src/handlers/recall.js', () => ({
-  handleRecall: vi.fn(),
+vi.mock('../src/utils/skills-loader.js', () => ({
+  loadSkillsContent: vi.fn(() => 'mock skills content'),
 }));
 
 vi.mock('../src/handlers/augmentation.js', () => ({
@@ -12,9 +12,14 @@ vi.mock('../src/handlers/augmentation.js', () => ({
 
 describe('plugin index', () => {
   let mockApi: OpenClawPluginApi;
+  let mockOn: ReturnType<typeof vi.fn>;
+  let mockRegisterTool: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    mockOn = vi.fn();
+    mockRegisterTool = vi.fn();
 
     mockApi = {
       pluginConfig: {
@@ -26,7 +31,12 @@ describe('plugin index', () => {
         warn: vi.fn(),
         error: vi.fn(),
       },
-      on: vi.fn(),
+      on: mockOn,
+      registerTool: mockRegisterTool,
+      resolvePath: vi.fn(
+        (relativePath: string) => `/tmp/memori-openclaw-test-missing/${relativePath}`
+      ),
+      registerCli: vi.fn(),
     } as unknown as OpenClawPluginApi;
   });
 
@@ -48,9 +58,9 @@ describe('plugin index', () => {
     it('should register hooks when config is valid', () => {
       memoriPlugin.register(mockApi);
 
-      expect(mockApi.on).toHaveBeenCalledWith('before_prompt_build', expect.any(Function));
-      expect(mockApi.on).toHaveBeenCalledWith('agent_end', expect.any(Function));
-      expect(mockApi.on).toHaveBeenCalledTimes(2);
+      expect(mockOn).toHaveBeenCalledWith('before_prompt_build', expect.any(Function));
+      expect(mockOn).toHaveBeenCalledWith('agent_end', expect.any(Function));
+      expect(mockOn).toHaveBeenCalledTimes(2);
     });
 
     it('should not register when apiKey is missing', () => {
@@ -63,7 +73,7 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
 
     it('should not register when entityId is missing', () => {
@@ -76,7 +86,7 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
 
     it('should not register when both apiKey and entityId are missing', () => {
@@ -87,7 +97,7 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
 
     it('should not register when pluginConfig is undefined', () => {
@@ -98,7 +108,7 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
 
     it('should not register when apiKey is empty string', () => {
@@ -112,7 +122,7 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
 
     it('should not register when entityId is empty string', () => {
@@ -126,33 +136,18 @@ describe('plugin index', () => {
       expect(mockApi.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Missing apiKey or entityId')
       );
-      expect(mockApi.on).not.toHaveBeenCalled();
+      expect(mockOn.mock.calls).toHaveLength(0);
     });
   });
 
   describe('hook handlers', () => {
-    it('should call handleRecall for before_prompt_build event', async () => {
-      const { handleRecall } = await import('../src/handlers/recall.js');
-
+    it('should inject skills content via before_prompt_build handler', () => {
       memoriPlugin.register(mockApi);
 
-      const beforePromptBuildHandler = vi
-        .mocked(mockApi.on)
-        .mock.calls.find((call) => call[0] === 'before_prompt_build')?.[1];
+      const handler = mockOn.mock.calls.find((call) => call[0] === 'before_prompt_build')?.[1];
 
-      expect(beforePromptBuildHandler).toBeDefined();
-
-      const mockEvent = { prompt: 'test' } as any;
-      const mockCtx = { sessionKey: 'session-123' } as any;
-
-      await beforePromptBuildHandler?.(mockEvent, mockCtx);
-
-      expect(handleRecall).toHaveBeenCalledWith(
-        mockEvent,
-        mockCtx,
-        { apiKey: 'test-api-key', entityId: 'test-entity-id' },
-        expect.any(Object)
-      );
+      expect(handler).toBeDefined();
+      expect(handler?.()).toEqual({ appendSystemContext: 'mock skills content' });
     });
 
     it('should call handleAugmentation for agent_end event', async () => {
@@ -160,9 +155,7 @@ describe('plugin index', () => {
 
       memoriPlugin.register(mockApi);
 
-      const agentEndHandler = vi
-        .mocked(mockApi.on)
-        .mock.calls.find((call) => call[0] === 'agent_end')?.[1];
+      const agentEndHandler = mockOn.mock.calls.find((call) => call[0] === 'agent_end')?.[1];
 
       expect(agentEndHandler).toBeDefined();
 
@@ -189,7 +182,7 @@ describe('plugin index', () => {
 
       memoriPlugin.register(mockApi);
 
-      expect(mockApi.on).toHaveBeenCalled();
+      expect(mockOn.mock.calls.length).toBeGreaterThan(0);
     });
 
     it('should handle additional config properties gracefully', () => {
@@ -202,7 +195,7 @@ describe('plugin index', () => {
 
       memoriPlugin.register(mockApi);
 
-      expect(mockApi.on).toHaveBeenCalledTimes(2);
+      expect(mockOn.mock.calls).toHaveLength(2);
     });
   });
 

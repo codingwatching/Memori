@@ -11,6 +11,9 @@ class TestIntegration extends BaseIntegration {
   public testRecall(userMessage: string) {
     return this.executeRecall(userMessage);
   }
+  public testAgentFeedback(content: string) {
+    return this.executeAgentFeedback(content);
+  }
 }
 
 describe('BaseIntegration', () => {
@@ -25,6 +28,9 @@ describe('BaseIntegration', () => {
       augmentation: { handleAugmentation: vi.fn() },
       config: { entityId: 'test-user', processId: 'test-process' },
       session: { id: 'test-session-id' },
+      project: { id: 'test-project-id', set: vi.fn() },
+      defaultApi: { post: vi.fn().mockResolvedValue(undefined) },
+      collectorApi: { post: vi.fn().mockResolvedValue(undefined) },
     } as unknown as MemoriCore;
 
     integration = new TestIntegration(mockCore);
@@ -39,7 +45,10 @@ describe('BaseIntegration', () => {
     it('should silently abort if no session ID is present', async () => {
       (mockCore.session as any).id = undefined;
 
-      const req = { userMessage: 'user msg', agentResponse: 'ai msg' };
+      const req: IntegrationRequest = {
+        userMessage: { role: 'user', content: 'user msg', type: 'text' },
+        agentResponse: { role: 'assistant', content: 'ai msg', type: 'text' },
+      };
 
       await integration.testCapture(req);
 
@@ -49,8 +58,8 @@ describe('BaseIntegration', () => {
 
     it('should format requests and invoke engines, properly passing metadata', async () => {
       const req: IntegrationRequest = {
-        userMessage: 'hello bot',
-        agentResponse: 'hello human',
+        userMessage: { role: 'user', content: 'hello bot', type: 'text' },
+        agentResponse: { role: 'assistant', content: 'hello human', type: 'text' },
         metadata: {
           provider: 'openclaw',
           model: 'gpt-4o',
@@ -63,11 +72,12 @@ describe('BaseIntegration', () => {
       await integration.testCapture(req);
 
       const expectedReq = expect.objectContaining({
-        messages: [{ role: 'user', content: 'hello bot' }],
+        messages: [{ role: 'user', content: 'hello bot', type: 'text' }],
         model: 'gpt-4o',
       });
       const expectedRes = expect.objectContaining({
         content: 'hello human',
+        type: 'text',
       });
       const expectedCtx = expect.objectContaining({
         traceId: expect.stringContaining('integration-trace-'),
@@ -91,7 +101,10 @@ describe('BaseIntegration', () => {
         new Error('Persistence failed')
       );
 
-      const req = { userMessage: 'msg', agentResponse: 'resp' };
+      const req: IntegrationRequest = {
+        userMessage: { role: 'user', content: 'msg', type: 'text' },
+        agentResponse: { role: 'assistant', content: 'resp', type: 'text' },
+      };
 
       // Should not throw
       await expect(integration.testCapture(req)).resolves.toBeUndefined();
@@ -155,6 +168,27 @@ describe('BaseIntegration', () => {
       expect(result).toBeUndefined();
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         'Memori Integration Recall failed:',
+        expect.any(Error)
+      );
+    });
+  });
+
+  describe('executeAgentFeedback()', () => {
+    it('should POST to agent/feedback with the provided content', async () => {
+      await integration.testAgentFeedback('great product!');
+
+      expect(mockCore.defaultApi.post).toHaveBeenCalledWith('agent/feedback', {
+        content: 'great product!',
+      });
+    });
+
+    it('should swallow errors and log a warning on failure', async () => {
+      (mockCore.defaultApi.post as any).mockRejectedValue(new Error('Network error'));
+
+      await expect(integration.testAgentFeedback('oops')).resolves.toBeUndefined();
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        'Memori Agent Feedback failed:',
         expect.any(Error)
       );
     });

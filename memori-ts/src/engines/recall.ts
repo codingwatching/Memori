@@ -2,15 +2,23 @@ import { CallContext, LLMRequest, Message, Role } from '@memorilabs/axon';
 import { Api } from '../core/network.js';
 import { Config } from '../core/config.js';
 import { SessionManager } from '../core/session.js';
+import { ProjectManager } from '../core/project.js';
 import { NativeEngine } from '../core/engine.js';
 import {
   extractFacts,
   extractHistory,
-  extractLastUserMessage,
+  extractLastUserMessageString,
   formatSummariesFromFacts,
   stringifyContent,
 } from '../utils/utils.js';
-import { CloudRecallResponse, ParsedFact } from '../types/api.js';
+import {
+  AgentRecallParams,
+  AgentRecallResponse,
+  AgentRecallSummaryParams,
+  AgentRecallSummaryResponse,
+  CloudRecallResponse,
+  ParsedFact,
+} from '../types/api.js';
 
 type RawHistoryMessage = {
   role?: unknown;
@@ -18,10 +26,7 @@ type RawHistoryMessage = {
   text?: unknown;
 };
 
-function sanitizeHistoryMessages(
-  messages: RawHistoryMessage[],
-  dropSystem = false
-): Message[] {
+function sanitizeHistoryMessages(messages: RawHistoryMessage[], dropSystem = false): Message[] {
   const sanitized: Message[] = [];
 
   for (const message of messages) {
@@ -51,7 +56,8 @@ export class RecallEngine {
     private readonly api: Api,
     private readonly engine: NativeEngine,
     private readonly config: Config,
-    private readonly session: SessionManager
+    private readonly session: SessionManager,
+    private readonly project: ProjectManager
   ) {}
 
   /**
@@ -79,13 +85,84 @@ export class RecallEngine {
   }
 
   /**
+   * Manually fetches memories from the agent recall endpoint (GET /v1/agent/recall).
+   * Project ID defaults to the current project context; session ID must be explicitly
+   * provided and requires a project ID to be present.
+   */
+  public async agentRecall(params: AgentRecallParams = {}): Promise<AgentRecallResponse> {
+    const projectId = params.projectId ?? this.project.id;
+    const sessionId = params.sessionId;
+
+    if (sessionId && !projectId) {
+      throw new Error('sessionId cannot be provided without projectId');
+    }
+
+    const qs = this.buildQueryString({
+      date_start: params.dateStart,
+      date_end: params.dateEnd,
+      entity_id: this.config.entityId,
+      project_id: projectId,
+      session_id: sessionId,
+      signal: params.signal,
+      source: params.source,
+    });
+
+    return this.api.get<AgentRecallResponse>(`agent/recall${qs}`);
+  }
+
+  /**
+   * Fetches memory summaries from the agent recall summary endpoint
+   * (GET /v1/agent/recall/summary). Project ID defaults to the current project
+   * context; session ID must be explicitly provided and requires a project ID.
+   */
+  public async agentRecallSummary(
+    params: AgentRecallSummaryParams = {}
+  ): Promise<AgentRecallSummaryResponse> {
+    const projectId = params.projectId ?? this.project.id;
+    const sessionId = params.sessionId;
+
+    if (sessionId && !projectId) {
+      throw new Error('sessionId cannot be provided without projectId');
+    }
+
+    const qs = this.buildQueryString({
+      date_start: params.dateStart,
+      date_end: params.dateEnd,
+      project_id: projectId,
+      session_id: sessionId,
+    });
+
+    return this.api.get<AgentRecallSummaryResponse>(`agent/recall/summary${qs}`);
+  }
+
+  private buildQueryString(
+    params: Record<string, string | number | boolean | Date | null | undefined>
+  ): string {
+    const qs = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(params)) {
+      if (value != null && value !== '') {
+        if (value instanceof Date) {
+          // Properly serialize Date objects to ISO 8601 strings for the backend
+          qs.set(key, value.toISOString());
+        } else {
+          qs.set(key, String(value));
+        }
+      }
+    }
+
+    const str = qs.toString();
+    return str ? `?${str}` : '';
+  }
+
+  /**
    * The Axon 'before' hook that injects memories into the LLM system prompt.
    */
   public async handleRecall(req: LLMRequest, _ctx: CallContext): Promise<LLMRequest> {
     const sessionId = this.session.id;
     if (!sessionId) return req;
 
-    const userQuery = extractLastUserMessage(req.messages);
+    const userQuery = extractLastUserMessageString(req.messages);
     if (!userQuery) return req;
 
     let facts: ParsedFact[] = [];
@@ -185,10 +262,7 @@ export class RecallEngine {
     };
     const response = await this.api.post<CloudRecallResponse>('cloud/recall', payload);
     const facts = extractFacts(response);
-    const history = sanitizeHistoryMessages(
-      extractHistory(response) as RawHistoryMessage[],
-      true
-    );
+    const history = sanitizeHistoryMessages(extractHistory(response) as RawHistoryMessage[], true);
     return { facts, history };
   }
 }

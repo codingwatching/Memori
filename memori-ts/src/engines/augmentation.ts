@@ -2,7 +2,8 @@ import { CallContext, LLMRequest, LLMResponse } from '@memorilabs/axon';
 import { Api } from '../core/network.js';
 import { Config } from '../core/config.js';
 import { SessionManager } from '../core/session.js';
-import { extractLastUserMessage } from '../utils/utils.js';
+import { ProjectManager } from '../core/project.js';
+import { extractLastUserMessageObject } from '../utils/utils.js';
 import { SDK_VERSION } from '../version.js';
 import { AugmentationInput, Trace } from '../types/integrations.js';
 import { NativeEngine } from '../core/engine.js';
@@ -21,22 +22,24 @@ type AugmentationData = {
  */
 export class AugmentationEngine {
   constructor(
-    private readonly api: Api,
+    private readonly defaultApi: Api,
+    private readonly collectorApi: Api,
     private readonly engine: NativeEngine,
     private readonly config: Config,
-    private readonly session: SessionManager
+    private readonly session: SessionManager,
+    private readonly project: ProjectManager
   ) {}
 
   private prepareAugmentationData(req: LLMRequest, res: LLMResponse, ctx: CallContext) {
     const sessionId = this.session.id;
     if (!sessionId) return null;
 
-    const lastUserMessage = extractLastUserMessage(req.messages);
+    const lastUserMessage = extractLastUserMessageObject(req.messages);
     if (!lastUserMessage) return null;
 
     const messages = [
-      { role: 'user', content: lastUserMessage },
-      { role: 'assistant', content: res.content },
+      { role: 'user', content: lastUserMessage.content, type: lastUserMessage.type ?? 'text' },
+      { role: 'assistant', content: res.content, type: res.type ?? 'text' },
     ];
 
     return {
@@ -71,14 +74,14 @@ export class AugmentationEngine {
     };
 
     // Fire-and-forget to cloud
-    this.api.post('cloud/augmentation', payload).catch((e: unknown) => {
+    this.defaultApi.post('cloud/augmentation', payload).catch((e: unknown) => {
       if (this.config.testMode) console.warn('Augmentation failed:', e);
     });
 
     return Promise.resolve(res);
   }
 
-  public handleAgentAugmentation(
+  public async handleAgentAugmentation(
     req: LLMRequest,
     res: LLMResponse,
     ctx: CallContext,
@@ -86,32 +89,63 @@ export class AugmentationEngine {
     summary?: string | null
   ): Promise<LLMResponse> {
     const data = this.prepareAugmentationData(req, res, ctx);
-    if (!data) return Promise.resolve(res);
+    if (!data) return res;
 
-    // Route to Rust engine for BYODB processing
     if (this.engine.hasStorage) {
       try {
         this.engine.submitAugmentation(this.buildAugmentationInput(req, ctx, data));
       } catch (e: unknown) {
         if (this.config.testMode) console.warn('Local Agent Augmentation failed:', e);
       }
-      return Promise.resolve(res);
+      return res;
     }
 
-    const payload = {
-      conversation: { messages: data.messages },
-      summary: summary || null,
-      trace: trace || null,
-      meta: data.meta,
+    const { attribution, ...metaFields } = data.meta;
+    const [userMsg, assistantMsg] = data.messages;
+
+    const formattedMessages = [
+      {
+        role: userMsg.role,
+        content: userMsg.content,
+        type: userMsg.type,
+        trace: null,
+      },
+      {
+        role: assistantMsg.role,
+        content: assistantMsg.content,
+        type: assistantMsg.type,
+        trace: trace ?? null,
+      },
+    ];
+
+    const turnPayload = {
+      attribution,
+      messages: formattedMessages,
+      project: { id: this.project.id },
       session: { id: data.sessionId },
     };
 
-    // Fire-and-forget to the dedicated agent endpoint
-    this.api.post('agent/augmentation', payload).catch((e: unknown) => {
+    const agentAugPayload = {
+      attribution,
+      conversation: { messages: formattedMessages },
+      meta: metaFields,
+      project: { id: this.project.id },
+      session: { id: data.sessionId, summary: summary ?? null },
+      trace: trace ?? null,
+    };
+
+    try {
+      await this.defaultApi.post('agent/conversation/turn', turnPayload);
+    } catch (e: unknown) {
+      if (this.config.testMode) console.warn('Agent Conversation Turn failed:', e);
+      return res; // Stop execution if the DB write fails!
+    }
+
+    this.collectorApi.post('agent/augmentation', agentAugPayload).catch((e: unknown) => {
       if (this.config.testMode) console.warn('Agent Augmentation failed:', e);
     });
 
-    return Promise.resolve(res);
+    return res;
   }
 
   private buildMeta(req: LLMRequest, ctx: CallContext): Record<string, unknown> {

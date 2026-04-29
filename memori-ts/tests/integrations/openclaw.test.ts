@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OpenClawIntegration } from '../../src/integrations/openclaw.js';
 import { MemoriCore } from '../../src/types/integrations.js';
+import { IntegrationRequest } from '../../src/types/integrations.js';
 
 describe('OpenClawIntegration', () => {
   let mockCore: MemoriCore;
@@ -16,65 +17,84 @@ describe('OpenClawIntegration', () => {
         id: 'default-session-id',
         set: vi.fn().mockReturnThis(),
       },
+      project: {
+        id: null,
+        set: vi.fn().mockReturnThis(),
+      },
+      defaultApi: { post: vi.fn().mockResolvedValue(undefined) },
+      collectorApi: { post: vi.fn().mockResolvedValue(undefined) },
     } as unknown as MemoriCore;
 
     openclaw = new OpenClawIntegration(mockCore);
   });
 
-  describe('setAttribution()', () => {
+  describe('scope()', () => {
+    it('should set the session id and return instance for chaining', () => {
+      const result = openclaw.scope('my-session', 'my-project');
+
+      expect(mockCore.session.set).toHaveBeenCalledWith('my-session');
+      expect(result).toBe(openclaw);
+    });
+
+    it('should set the project id', () => {
+      openclaw.scope('my-session', 'my-project');
+
+      expect(mockCore.project.set).toHaveBeenCalledWith('my-project');
+    });
+  });
+
+  describe('attribution()', () => {
     it('should update entityId and return instance for chaining', () => {
-      const result = openclaw.setAttribution('user-123');
+      const result = openclaw.attribution('user-123');
 
       expect(mockCore.config.entityId).toBe('user-123');
       expect(mockCore.config.processId).toBeUndefined();
-      expect(result).toBe(openclaw); // Chainable
+      expect(result).toBe(openclaw);
     });
 
     it('should update both entityId and processId', () => {
-      openclaw.setAttribution('user-123', 'openclaw-agent');
+      openclaw.attribution('user-123', 'openclaw-agent');
 
       expect(mockCore.config.entityId).toBe('user-123');
       expect(mockCore.config.processId).toBe('openclaw-agent');
     });
   });
 
-  describe('setSession()', () => {
-    it('should delegate to core session manager and return instance for chaining', () => {
-      const result = openclaw.setSession('custom-session-uuid');
-
-      expect(mockCore.session.set).toHaveBeenCalledWith('custom-session-uuid');
-      expect(result).toBe(openclaw); // Chainable
-    });
-  });
-
-  describe('capture()', () => {
-    it('should delegate to the inherited augmentation method', async () => {
-      // Spy on the protected method inherited from BaseIntegration
-      const augmentationSpy = vi
-        .spyOn(openclaw as any, 'augmentation')
+  describe('augmentation()', () => {
+    it('should delegate to executeAgentAugmentation', async () => {
+      const spy = vi
+        .spyOn(openclaw as any, 'executeAgentAugmentation')
         .mockResolvedValue(undefined);
 
-      const req = { userMessage: 'user says hi', agentResponse: 'bot says hello' };
-
+      const req: IntegrationRequest = {
+        userMessage: { role: 'user', content: 'user says hi', type: 'text' },
+        agentResponse: { role: 'assistant', content: 'bot says hello', type: 'text' },
+      };
       await openclaw.augmentation(req);
 
-      expect(augmentationSpy).toHaveBeenCalledWith(req);
+      expect(spy).toHaveBeenCalledWith(req);
     });
   });
 
   describe('recall()', () => {
-    it('should delegate to the inherited executeRecall method and return the result', async () => {
+    it('should delegate to executeRecall and return the result', async () => {
       const mockMemoryContext = '<memori_context>context data</memori_context>';
-
-      // Spy on the protected method inherited from BaseIntegration
-      const executeRecallSpy = vi
-        .spyOn(openclaw as any, 'executeRecall')
-        .mockResolvedValue(mockMemoryContext);
+      const spy = vi.spyOn(openclaw as any, 'executeRecall').mockResolvedValue(mockMemoryContext);
 
       const result = await openclaw.recall('prompt text');
 
-      expect(executeRecallSpy).toHaveBeenCalledWith('prompt text');
+      expect(spy).toHaveBeenCalledWith('prompt text');
       expect(result).toBe(mockMemoryContext);
+    });
+  });
+
+  describe('agentFeedback()', () => {
+    it('should delegate to executeAgentFeedback with the provided content', async () => {
+      const spy = vi.spyOn(openclaw as any, 'executeAgentFeedback').mockResolvedValue(undefined);
+
+      await openclaw.agentFeedback('this is great');
+
+      expect(spy).toHaveBeenCalledWith('this is great');
     });
   });
 });

@@ -1,6 +1,9 @@
+import { IntegrationMessage } from '@memorilabs/memori/integrations';
+
 export interface MemoriPluginConfig {
   apiKey: string;
   entityId: string;
+  projectId: string;
 }
 
 export interface OpenClawMessageBlock {
@@ -50,7 +53,7 @@ export interface ExtractedToolCall {
 }
 
 export interface ParsedTurn {
-  userMessage: { role: string; content: string } | null;
-  assistantMessage: { role: string; content: string } | null;
+  userMessage: IntegrationMessage | null;
+  assistantMessage: IntegrationMessage | null;
   tools: ExtractedToolCall[];
 }
